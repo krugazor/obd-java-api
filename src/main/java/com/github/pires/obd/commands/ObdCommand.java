@@ -1,11 +1,13 @@
 package com.github.pires.obd.commands;
 
+import com.github.pires.obd.commands.protocol.OBDReadCurrentProtocol;
 import com.github.pires.obd.exceptions.*;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.ArrayList;
+import android.util.Log;
 
 /**
  * Base OBD command.
@@ -153,6 +155,18 @@ public abstract class ObdCommand {
         }
     }
 
+    /// utility function for multilines, but may be reused elsewhere
+    public static int countOccurences(String s, char c) {
+        int counter = 0;
+        for( int i=0; i<s.length(); i++ ) {
+            if( s.charAt(i) == c ) {
+                counter++;
+            }
+        }
+
+        return counter;
+    }
+
     /**
      * <p>
      * readRawData.</p>
@@ -164,14 +178,61 @@ public abstract class ObdCommand {
         byte b = 0;
         StringBuilder res = new StringBuilder();
 
+        // TODO : multiline
         // read until '>' arrives OR end of stream reached
-        char c;
+        char c = '@';
+        boolean multiline = false;
+        boolean potential = false;
+        boolean hasAtLeastHeaderSize = false;
         // -1 if the end of the stream is reached
         while (((b = (byte) in.read()) > -1)) {
+            if(c == '@' && ((char)b) != '4')
+                potential = true;
             c = (char) b;
+            if(c == ':' && !multiline)
+                multiline = true;
             if (c == '>') // read until '>' arrives
             {
-                break;
+                String currentStr = res.toString();
+                int header = -1;
+
+                if(multiline) {
+                    // we already have :
+                    int headerlength = currentStr.indexOf(':');
+                    String headerStr = currentStr.substring(0,headerlength-1).replaceAll("[ \r]", "");
+                    header = Integer.parseInt(headerStr, 16);
+                } else {
+                    try {
+                        header = Integer.parseInt(currentStr, 16);
+                    } catch (Exception e) {
+                    }
+                }
+
+                if(header >= 0 && !(this instanceof OBDReadCurrentProtocol)) {
+                    potential = true;
+                    multiline = true;
+
+                    // number of elements = number of spaces - 1(header) - number of numbered lines (:)
+                    hasAtLeastHeaderSize = (countOccurences(currentStr, ' ') - 1 - countOccurences(currentStr, ':') >= header);
+                }
+                if(!potential || !multiline) {
+                    break;
+                }
+                else if(potential && multiline && hasAtLeastHeaderSize)
+                    break;
+                else {
+                    // investigate
+                    Log.d("INSPECT", "Not breaking for "+ currentStr);
+
+                    // DEBUG : let's say it's all good...
+                    if(currentStr.endsWith("\r\r")) {
+                        // put it all on one line
+                        String result = currentStr.substring(currentStr.indexOf(':') + 1);
+                        result = result.replaceAll("[0-9A-F]: ", ""); // trim the headers
+                        res = new StringBuilder(result);
+                        break;
+                    }
+                }
             }
             res.append(c);
         }
